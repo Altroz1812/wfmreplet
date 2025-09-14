@@ -8,6 +8,10 @@ from passlib.context import CryptContext
 from passlib.hash import bcrypt
 from cryptography.fernet import Fernet
 from pydantic import BaseModel
+from fastapi import Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+oauth2_scheme = HTTPBearer()
 
 from ..config.settings import settings
 
@@ -132,6 +136,22 @@ class SecurityManager:
             )
         except jwt.JWTError:
             return None
+    
+    async def get_current_user(self, token: str = Depends(oauth2_scheme)) -> TokenData:
+        """Get current user from JWT token - FastAPI dependency."""
+        from fastapi import HTTPException, status
+        
+        credentials_exception = HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        
+        token_data = self.verify_token(token)
+        if token_data is None:
+            raise credentials_exception
+        
+        return token_data
     
     def encrypt_sensitive_data(self, data: str) -> str:
         """Encrypt sensitive data."""

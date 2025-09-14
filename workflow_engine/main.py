@@ -13,6 +13,7 @@ from .api_gateway.middleware import SecurityMiddleware, RateLimitMiddleware, Req
 from .monitoring.health_checker import health_checker
 from .monitoring.metrics import metrics_collector, performance_tracker
 from .monitoring.logger import logger, security_logger
+from .core.workflow_monitor import workflow_monitor
 
 
 @asynccontextmanager
@@ -31,6 +32,11 @@ async def lifespan(app: FastAPI):
         overall_health = health_checker.get_overall_health_status(health_results)
         logger.info("Initial health check completed", overall_status=overall_health)
         
+        # Start workflow monitoring
+        import asyncio
+        workflow_monitor._monitoring_task = asyncio.create_task(workflow_monitor._monitoring_loop())
+        logger.info("Workflow monitoring started")
+        
         if overall_health == "UNHEALTHY":
             logger.critical("System failed initial health checks - some services may be unavailable")
         
@@ -43,6 +49,11 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down Workflow Management System")
     try:
+        # Stop workflow monitoring
+        workflow_monitor.shutdown()
+        if workflow_monitor._monitoring_task:
+            workflow_monitor._monitoring_task.cancel()
+        
         db_manager.close_connections()
         logger.info("Database connections closed")
     except Exception as e:
@@ -210,6 +221,14 @@ async def status():
     }
 
 
+# Include API routers
+try:
+    from .api.v1.workflows import router as workflows_router
+    app.include_router(workflows_router, prefix="/api/v1", tags=["workflows"])
+    logger.info("Workflow API routes registered")
+except Exception as e:
+    logger.warning(f"Failed to register workflow routes: {str(e)}")
+
 # Root endpoint
 @app.get("/")
 async def root():
@@ -221,7 +240,12 @@ async def root():
         "environment": settings.environment,
         "documentation": "/docs",
         "health": "/health",
-        "metrics": "/metrics"
+        "metrics": "/metrics",
+        "api": {
+            "workflows": "/api/v1/workflows",
+            "workflow_definitions": "/api/v1/workflows/definitions",
+            "workflow_instances": "/api/v1/workflows/instances"
+        }
     }
 
 

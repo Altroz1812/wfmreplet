@@ -254,3 +254,177 @@ class APIRateLimit(Base):
         Index("idx_rate_limit_identifier_endpoint", "identifier", "endpoint"),
         Index("idx_rate_limit_window", "window_end"),
     )
+
+
+class WorkflowDefinition(Base):
+    """Workflow definition model for storing workflow schemas."""
+    
+    __tablename__ = "workflow_definitions"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False, index=True)
+    version = Column(String(50), nullable=False, default="1.0.0")
+    description = Column(Text)
+    category = Column(String(100), nullable=False, default="general", index=True)
+    
+    # Workflow structure
+    definition = Column(JSONB, nullable=False)  # Complete workflow definition JSON
+    variables = Column(JSONB, default=dict)  # Default variables
+    permissions = Column(JSONB, default=list)  # Required permissions
+    tags = Column(JSONB, default=list)  # Tags for categorization
+    
+    # Status and lifecycle
+    is_active = Column(Boolean, default=True)
+    is_published = Column(Boolean, default=False)
+    
+    # Audit fields
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    
+    # Relationships
+    instances = relationship("WorkflowInstance", back_populates="definition")
+    
+    __table_args__ = (
+        Index("idx_workflow_def_name_version", "name", "version", unique=True),
+        Index("idx_workflow_def_category", "category"),
+        Index("idx_workflow_def_active", "is_active", "is_published"),
+    )
+
+
+class WorkflowInstance(Base):
+    """Workflow instance model for tracking execution."""
+    
+    __tablename__ = "workflow_instances"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workflow_definition_id = Column(UUID(as_uuid=True), ForeignKey("workflow_definitions.id"), nullable=False)
+    
+    # Instance details
+    name = Column(String(255))  # Optional instance name
+    status = Column(String(50), nullable=False, default="created", index=True)  # created, running, paused, completed, failed, cancelled
+    current_step = Column(String(255))  # Current step ID
+    
+    # Execution data
+    variables = Column(JSONB, default=dict)  # Runtime variables
+    context = Column(JSONB, default=dict)  # Execution context
+    workflow_metadata = Column(JSONB, default=dict)  # Additional metadata
+    
+    # Progress tracking
+    progress_percentage = Column(Integer, default=0)  # 0-100
+    steps_completed = Column(Integer, default=0)
+    steps_total = Column(Integer, default=0)
+    
+    # Error handling
+    error_message = Column(Text)  # Last error message
+    retry_count = Column(Integer, default=0)
+    
+    # Timing
+    started_at = Column(DateTime(timezone=True))
+    completed_at = Column(DateTime(timezone=True))
+    last_activity_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    
+    # Audit fields
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    
+    # Relationships
+    definition = relationship("WorkflowDefinition", back_populates="instances")
+    steps = relationship("WorkflowStepExecution", back_populates="instance")
+    approvals = relationship("WorkflowApproval", back_populates="instance")
+    
+    __table_args__ = (
+        Index("idx_workflow_instance_status", "status"),
+        Index("idx_workflow_instance_def", "workflow_definition_id"),
+        Index("idx_workflow_instance_created_by", "created_by"),
+        Index("idx_workflow_instance_activity", "last_activity_at"),
+    )
+
+
+class WorkflowStepExecution(Base):
+    """Workflow step execution tracking."""
+    
+    __tablename__ = "workflow_step_executions"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workflow_instance_id = Column(UUID(as_uuid=True), ForeignKey("workflow_instances.id"), nullable=False)
+    
+    # Step details
+    step_id = Column(String(255), nullable=False, index=True)  # Step ID from definition
+    step_name = Column(String(255), nullable=False)
+    step_type = Column(String(50), nullable=False, index=True)  # task, decision, ai_analysis, etc.
+    
+    # Execution details
+    status = Column(String(50), nullable=False, default="pending", index=True)  # pending, running, completed, failed, skipped, blocked
+    input_data = Column(JSONB, default=dict)  # Input data for the step
+    output_data = Column(JSONB, default=dict)  # Output data from the step
+    error_message = Column(Text)  # Error message if failed
+    
+    # AI-specific fields
+    ai_analysis = Column(JSONB)  # AI analysis results
+    ai_confidence = Column(Integer)  # AI confidence score (0-100)
+    
+    # Timing
+    started_at = Column(DateTime(timezone=True))
+    completed_at = Column(DateTime(timezone=True))
+    duration_seconds = Column(Integer)  # Execution duration
+    
+    # Retry and recovery
+    retry_count = Column(Integer, default=0)
+    max_retries = Column(Integer, default=3)
+    
+    # Audit fields
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    executed_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))  # User who executed (for manual steps)
+    
+    # Relationships
+    instance = relationship("WorkflowInstance", back_populates="steps")
+    
+    __table_args__ = (
+        Index("idx_workflow_step_instance", "workflow_instance_id"),
+        Index("idx_workflow_step_status", "status"),
+        Index("idx_workflow_step_type", "step_type"),
+        Index("idx_workflow_step_timing", "started_at", "completed_at"),
+    )
+
+
+class WorkflowApproval(Base):
+    """Workflow approval tracking for human approval steps."""
+    
+    __tablename__ = "workflow_approvals"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workflow_instance_id = Column(UUID(as_uuid=True), ForeignKey("workflow_instances.id"), nullable=False)
+    step_execution_id = Column(UUID(as_uuid=True), ForeignKey("workflow_step_executions.id"), nullable=False)
+    
+    # Approval details
+    approval_type = Column(String(100), nullable=False, index=True)  # loan_approval, document_review, etc.
+    required_roles = Column(JSONB, default=list)  # Roles required for approval
+    message = Column(Text)  # Approval message or instructions
+    
+    # Approval status
+    status = Column(String(50), nullable=False, default="pending", index=True)  # pending, approved, rejected, expired
+    approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    approval_comment = Column(Text)
+    
+    # Timing
+    requested_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    responded_at = Column(DateTime(timezone=True))
+    expires_at = Column(DateTime(timezone=True))  # Expiration time for approval
+    
+    # Audit fields
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    
+    # Relationships
+    instance = relationship("WorkflowInstance", back_populates="approvals")
+    approver = relationship("User", foreign_keys=[approved_by])
+    
+    __table_args__ = (
+        Index("idx_workflow_approval_instance", "workflow_instance_id"),
+        Index("idx_workflow_approval_status", "status"),
+        Index("idx_workflow_approval_type", "approval_type"),
+        Index("idx_workflow_approval_expires", "expires_at"),
+    )
